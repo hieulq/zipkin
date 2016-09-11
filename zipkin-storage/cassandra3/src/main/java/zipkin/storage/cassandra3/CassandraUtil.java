@@ -19,6 +19,7 @@ import com.datastax.driver.core.PreparedStatement;
 import com.google.common.base.Function;
 import com.google.common.collect.Sets;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -36,7 +37,6 @@ import zipkin.storage.QueryRequest;
 
 import static zipkin.internal.Util.UTF_8;
 import static zipkin.internal.Util.checkArgument;
-import static zipkin.internal.Util.sortedList;
 
 final class CassandraUtil {
 
@@ -73,19 +73,20 @@ final class CassandraUtil {
       if (Constants.CORE_ANNOTATIONS.contains(a.value)) continue;
 
       if (a.endpoint != null && !a.endpoint.serviceName.isEmpty()) {
-        annotationKeys.add(a.endpoint.serviceName + ":" + a.value);
+        annotationKeys.add(a.endpoint.serviceName);
+        annotationKeys.add(a.value);
       }
     }
     for (BinaryAnnotation b : span.binaryAnnotations) {
-      if (b.type == BinaryAnnotation.Type.STRING
-          && b.endpoint != null
-          && !b.endpoint.serviceName.isEmpty()
-          && b.value.length <= LONGEST_VALUE_TO_INDEX * 4) { // UTF_8 is up to 4bytes/char
-        String value = new String(b.value, UTF_8);
-        if (value.length() > LONGEST_VALUE_TO_INDEX) continue;
-
-        annotationKeys.add(b.endpoint.serviceName + ":" + b.key);
-        annotationKeys.add(b.endpoint.serviceName + ":" + b.key + ":" + new String(b.value, UTF_8));
+      if (b.endpoint != null && !b.endpoint.serviceName.isEmpty() && !Constants.CORE_ANNOTATIONS.contains(b.key)) {
+        annotationKeys.add(b.endpoint.serviceName);
+        if (b.type == BinaryAnnotation.Type.STRING) {
+            String value = new String(b.value, UTF_8);
+            value = value.substring(0, Math.min(value.length(), LONGEST_VALUE_TO_INDEX));
+            annotationKeys.add(b.key + ":" + value);
+        } else {
+            annotationKeys.add(b.key);
+        }
       }
     }
     return annotationKeys;
@@ -96,14 +97,17 @@ final class CassandraUtil {
       return Collections.emptyList();
     }
     checkArgument(request.serviceName != null, "serviceName needed with annotation query");
-    Set<String> annotationKeys = new LinkedHashSet<>();
+    List<String> annotationKeys = new ArrayList<>();
+    annotationKeys.add(request.serviceName);
     for (String a : request.annotations) { // doesn't include CORE_ANNOTATIONS
-      annotationKeys.add(request.serviceName + ":" + a);
+      if (!annotationKeys.contains(a))
+          annotationKeys.add(a);
     }
     for (Map.Entry<String, String> b : request.binaryAnnotations.entrySet()) {
-      annotationKeys.add(request.serviceName + ":" + b.getKey() + ":" + b.getValue());
+      if (!annotationKeys.contains(b.getKey() + ":" + b.getValue()))
+          annotationKeys.add(b.getKey() + ":" + b.getValue());
     }
-    return sortedList(annotationKeys);
+    return annotationKeys;
   }
 
   static Function<Map<BigInteger, Long>, Set<BigInteger>> keyset() {
